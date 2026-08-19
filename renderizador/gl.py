@@ -6,7 +6,7 @@
 """
 Biblioteca Gráfica / Graphics Library.
 
-Desenvolvido por: Luka Figueiredo
+Desenvolvido por: Luka Figueiredo & Luiz Duarnd
 Disciplina: Computação Gráfica
 Data: 19/08/2026
 """
