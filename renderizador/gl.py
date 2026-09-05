@@ -6,7 +6,7 @@
 """
 Biblioteca Gráfica / Graphics Library.
 
-Desenvolvido por: Luka Figueiredo & Luiz Duarnd
+Desenvolvido por: Luka Figueiredo & Luiz Durand
 Disciplina: Computação Gráfica
 Data: 19/08/2026
 """
@@ -24,6 +24,11 @@ class GL:
     near = 0.01   # plano de corte próximo
     far = 1000    # plano de corte distante
 
+    matriz_camera = np.identity(4)       # mundo -> espaço da câmera
+    matriz_perspectiva = np.identity(4)  # câmera -> espaço de recorte
+    matriz_tela = np.identity(4)         # coordenadas normalizadas -> pixels
+    pilha_modelo = [np.identity(4)]      # pilha de matrizes objeto -> mundo
+
     @staticmethod
     def setup(width, height, near=0.01, far=1000):
         """Definr parametros para câmera de razão de aspecto, plano próximo e distante."""
@@ -31,6 +36,11 @@ class GL:
         GL.height = height
         GL.near = near
         GL.far = far
+
+        # Estado inicial: pilha zerada e uma câmera padrão, caso a cena não
+        # traga um nó Viewpoint.
+        GL.pilha_modelo = [np.identity(4)]
+        GL.viewpoint([0.0, 0.0, 10.0], [0.0, 0.0, 1.0, 0.0], math.pi / 4)
 
     # -------------------------------------------------------------------------
     # Funções auxiliares usadas pelo rasterizador 2D
@@ -157,77 +167,147 @@ class GL:
                         vertices[i + 4], vertices[i + 5], color)
 
 
+    # -------------------------------------------------------------------------
+    # Matrizes do pipeline 3D
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def matriz_translacao(t):
+        """Matriz 4x4 de translação por t = [x, y, z]."""
+        return np.array([[1.0, 0.0, 0.0, t[0]],
+                         [0.0, 1.0, 0.0, t[1]],
+                         [0.0, 0.0, 1.0, t[2]],
+                         [0.0, 0.0, 0.0, 1.0]])
+
+    @staticmethod
+    def matriz_escala(s):
+        """Matriz 4x4 de escala por s = [x, y, z]."""
+        return np.array([[s[0], 0.0, 0.0, 0.0],
+                         [0.0, s[1], 0.0, 0.0],
+                         [0.0, 0.0, s[2], 0.0],
+                         [0.0, 0.0, 0.0, 1.0]])
+
+    @staticmethod
+    def matriz_rotacao(r):
+        """Matriz 4x4 de rotação a partir de r = [x, y, z, t] (eixo + ângulo em radianos).
+
+        Usa a fórmula de Rodrigues, que resolve um eixo qualquer de uma vez só,
+        em vez de compor rotações separadas em x, y e z.
+        """
+        eixo = np.array(r[:3], dtype=float)
+        norma = np.linalg.norm(eixo)
+        if norma == 0:  # eixo degenerado: rotação não definida, devolve identidade
+            return np.identity(4)
+        x, y, z = eixo / norma
+
+        c = math.cos(r[3])
+        s = math.sin(r[3])
+        t = 1.0 - c
+        return np.array([[t*x*x + c,   t*x*y - s*z, t*x*z + s*y, 0.0],
+                         [t*x*y + s*z, t*y*y + c,   t*y*z - s*x, 0.0],
+                         [t*x*z - s*y, t*y*z + s*x, t*z*z + c,   0.0],
+                         [0.0,         0.0,         0.0,         1.0]])
+
+    @staticmethod
+    def projetar(pontos):
+        """Leva pontos do espaço do objeto para coordenadas de tela (em pixels).
+
+        Aplica, nesta ordem: matriz do modelo (topo da pilha) -> câmera ->
+        projeção perspectiva -> divisão perspectiva -> matriz de tela.
+        Recebe e devolve uma matriz 4xN (cada coluna é um ponto homogêneo).
+        """
+        mvp = np.matmul(GL.matriz_perspectiva,
+                        np.matmul(GL.matriz_camera, GL.pilha_modelo[-1]))
+        p = np.matmul(mvp, pontos)
+
+        # Divisão perspectiva: é ela que faz o objeto distante parecer menor
+        w = np.where(np.abs(p[3]) < 1e-12, 1e-12, p[3])  # evita divisão por zero
+        p = p / w
+
+        return np.matmul(GL.matriz_tela, p)
+
+    # -------------------------------------------------------------------------
+    # Nós do X3D
+    # -------------------------------------------------------------------------
+
     @staticmethod
     def triangleSet(point, colors):
         """Função usada para renderizar TriangleSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleSet
-        # Nessa função você receberá pontos no parâmetro point, esses pontos são uma lista
-        # de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x do
-        # primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
-        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e
-        # assim por diante.
-        # No TriangleSet os triângulos são informados individualmente, assim os três
-        # primeiros pontos definem um triângulo, os três próximos pontos definem um novo
-        # triângulo, e assim por diante.
-        # O parâmetro colors é um dicionário com os tipos cores possíveis, você pode assumir
-        # inicialmente, para o TriangleSet, o desenho das linhas com a cor emissiva
-        # (emissiveColor), conforme implementar novos materias você deverá suportar outros
-        # tipos de cores.
+        # A lista point vem como [x0, y0, z0, x1, y1, z1, ...]; cada 9 valores
+        # (3 pontos) formam um triângulo independente.
+        color = GL.rgb8(colors)
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleSet : pontos = {0}".format(point)) # imprime no terminal pontos
-        print("TriangleSet : colors = {0}".format(colors)) # imprime no terminal as cores
+        # Monta todos os vértices de uma vez como matriz homogênea 4xN
+        vertices = np.array(point, dtype=float).reshape(-1, 3).T
+        vertices = np.vstack([vertices, np.ones(vertices.shape[1])])
 
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        tela = GL.projetar(vertices)
+
+        # Depois da projeção sobra um problema 2D, resolvido pelo mesmo
+        # rasterizador de triângulos do projeto anterior
+        for i in range(0, tela.shape[1] - 2, 3):
+            GL.triangle(tela[0][i],     tela[1][i],
+                        tela[0][i + 1], tela[1][i + 1],
+                        tela[0][i + 2], tela[1][i + 2], color)
 
     @staticmethod
     def viewpoint(position, orientation, fieldOfView):
         """Função usada para renderizar (na verdade coletar os dados) de Viewpoint."""
-        # Na função de viewpoint você receberá a posição, orientação e campo de visão da
-        # câmera virtual. Use esses dados para poder calcular e criar a matriz de projeção
-        # perspectiva para poder aplicar nos pontos dos objetos geométricos.
+        # A câmera é um objeto como outro qualquer: para levar o mundo para o
+        # espaço da câmera aplica-se a transformação INVERSA da câmera. Como a
+        # rotação é ortonormal, sua inversa é a transposta, e a translação
+        # inversa é o negativo da posição.
+        rotacao = GL.matriz_rotacao(orientation)
+        GL.matriz_camera = np.matmul(
+            rotacao.T, GL.matriz_translacao(-np.array(position, dtype=float)))
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Viewpoint : ", end='')
-        print("position = {0} ".format(position), end='')
-        print("orientation = {0} ".format(orientation), end='')
-        print("fieldOfView = {0} ".format(fieldOfView))
+        # Projeção perspectiva. No X3D fieldOfView se refere à menor dimensão da
+        # tela, então o ângulo é reescalado pela diagonal do viewport.
+        fovy = 2 * math.atan(math.tan(fieldOfView / 2) * GL.height /
+                             math.hypot(GL.width, GL.height))
+        top = GL.near * math.tan(fovy)
+        right = top * (GL.width / GL.height)
+
+        GL.matriz_perspectiva = np.array([
+            [GL.near / right, 0.0, 0.0, 0.0],
+            [0.0, GL.near / top, 0.0, 0.0],
+            [0.0, 0.0, -(GL.far + GL.near) / (GL.far - GL.near),
+             -2.0 * GL.far * GL.near / (GL.far - GL.near)],
+            [0.0, 0.0, -1.0, 0.0]])
+
+        # Matriz de tela: leva as coordenadas normalizadas (-1 a 1) para pixels.
+        # O -height/2 inverte o eixo y, que no X3D cresce para cima e na tela
+        # cresce para baixo.
+        GL.matriz_tela = np.array([[GL.width / 2, 0.0, 0.0, GL.width / 2],
+                                   [0.0, -GL.height / 2, 0.0, GL.height / 2],
+                                   [0.0, 0.0, 1.0, 0.0],
+                                   [0.0, 0.0, 0.0, 1.0]])
 
     @staticmethod
     def transform_in(translation, scale, rotation):
         """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_in será chamada quando se entrar em um nó X3D do tipo Transform
-        # do grafo de cena. Os valores passados são a escala em um vetor [x, y, z]
-        # indicando a escala em cada direção, a translação [x, y, z] nas respectivas
-        # coordenadas e finalmente a rotação por [x, y, z, t] sendo definida pela rotação
-        # do objeto ao redor do eixo x, y, z por t radianos, seguindo a regra da mão direita.
-        # ESSES NÃO SÃO OS VALORES DE QUATÉRNIOS AS CONTAS AINDA PRECISAM SER FEITAS.
-        # Quando se entrar em um nó transform se deverá salvar a matriz de transformação dos
-        # modelos do mundo para depois potencialmente usar em outras chamadas. 
-        # Quando começar a usar Transforms dentre de outros Transforms, mais a frente no curso
-        # Você precisará usar alguma estrutura de dados pilha para organizar as matrizes.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Transform : ", end='')
+        # Monta a matriz do modelo na ordem escala -> rotação -> translação
+        # (lida da direita para a esquerda no produto de matrizes).
+        matriz = np.identity(4)
         if translation:
-            print("translation = {0} ".format(translation), end='') # imprime no terminal
-        if scale:
-            print("scale = {0} ".format(scale), end='') # imprime no terminal
+            matriz = np.matmul(matriz, GL.matriz_translacao(translation))
         if rotation:
-            print("rotation = {0} ".format(rotation), end='') # imprime no terminal
-        print("")
+            matriz = np.matmul(matriz, GL.matriz_rotacao(rotation))
+        if scale:
+            matriz = np.matmul(matriz, GL.matriz_escala(scale))
+
+        # Empilha já combinada com a matriz do nó pai, para suportar Transforms
+        # aninhados: o topo da pilha é sempre "objeto -> mundo".
+        GL.pilha_modelo.append(np.matmul(GL.pilha_modelo[-1], matriz))
 
     @staticmethod
     def transform_out():
         """Função usada para renderizar (na verdade coletar os dados) de Transform."""
-        # A função transform_out será chamada quando se sair em um nó X3D do tipo Transform do
-        # grafo de cena. Não são passados valores, porém quando se sai de um nó transform se
-        # deverá recuperar a matriz de transformação dos modelos do mundo da estrutura de
-        # pilha implementada.
+        # Ao sair do nó, desempilha para voltar ao referencial do pai.
+        if len(GL.pilha_modelo) > 1:
+            GL.pilha_modelo.pop()
 
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("Saindo de Transform")
 
     @staticmethod
     def triangleStripSet(point, stripCount, colors):
