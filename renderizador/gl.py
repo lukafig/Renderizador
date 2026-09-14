@@ -12,6 +12,7 @@ Data: 19/08/2026
 """
 
 import time         # Para operações com tempo
+import itertools    # Para agrupar listas de índices
 import gpu          # Simula os recursos de uma GPU
 import math         # Funções matemáticas
 import numpy as np  # Biblioteca do Numpy
@@ -309,96 +310,70 @@ class GL:
             GL.pilha_modelo.pop()
 
 
+    # -------------------------------------------------------------------------
+    # Malhas de triângulos
+    #
+    # Os três nós abaixo são só formas diferentes de dizer "quais vértices formam
+    # cada triângulo". Todos terminam virando uma lista achatada de índices e
+    # caem no mesmo triangleSet, que já sabe projetar e rasterizar.
+    # -------------------------------------------------------------------------
+
+    @staticmethod
+    def faixas(index):
+        """Quebra uma lista de índices do X3D nos separadores -1."""
+        return [list(g) for k, g in itertools.groupby(index, lambda i: i >= 0) if k]
+
+    @staticmethod
+    def tira(v):
+        """Índices dos triângulos de uma tira: (0,1,2), (1,2,3), (2,3,4)..."""
+        # ponytail: sem alternar a orientação a cada triângulo (a spec manda
+        # trocar nos ímpares). GL.triangle já normaliza o sentido, então hoje não
+        # muda nada; alternar vira obrigatório quando entrar backface culling.
+        return [i for k in range(len(v) - 2) for i in (v[k], v[k + 1], v[k + 2])]
+
+    @staticmethod
+    def leque(v):
+        """Índices dos triângulos de um leque: (0,1,2), (0,2,3), (0,3,4)..."""
+        return [i for k in range(1, len(v) - 1) for i in (v[0], v[k], v[k + 1])]
+
+    @staticmethod
+    def desenhar_indices(point, indices, colors):
+        """Expande os índices em coordenadas e delega para o triangleSet."""
+        GL.triangleSet([c for i in indices for c in point[3 * i:3 * i + 3]], colors)
+
     @staticmethod
     def triangleStripSet(point, stripCount, colors):
         """Função usada para renderizar TriangleStripSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#TriangleStripSet
-        # A função triangleStripSet é usada para desenhar tiras de triângulos interconectados,
-        # você receberá as coordenadas dos pontos no parâmetro point, esses pontos são uma
-        # lista de pontos x, y, e z sempre na ordem. Assim point[0] é o valor da coordenada x
-        # do primeiro ponto, point[1] o valor y do primeiro ponto, point[2] o valor z da
-        # coordenada z do primeiro ponto. Já point[3] é a coordenada x do segundo ponto e assim
-        # por diante. No TriangleStripSet a quantidade de vértices a serem usados é informado
-        # em uma lista chamada stripCount (perceba que é uma lista). Ligue os vértices na ordem,
-        # primeiro triângulo será com os vértices 0, 1 e 2, depois serão os vértices 1, 2 e 3,
-        # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
-        # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("TriangleStripSet : pontos = {0} ".format(point), end='')
-        for i, strip in enumerate(stripCount):
-            print("strip[{0}] = {1} ".format(i, strip), end='')
-        print("")
-        print("TriangleStripSet : colors = {0}".format(colors)) # imprime no terminal as cores
-
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Os vértices vêm em sequência e stripCount diz quantos entram em cada
+        # tira, então basta ir fatiando a numeração 0, 1, 2, ... na ordem.
+        indices = []
+        inicio = 0
+        for n in stripCount:
+            indices += GL.tira(range(inicio, inicio + n))
+            inicio += n
+        GL.desenhar_indices(point, indices, colors)
 
     @staticmethod
     def indexedTriangleStripSet(point, index, colors):
         """Função usada para renderizar IndexedTriangleStripSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/rendering.html#IndexedTriangleStripSet
-        # A função indexedTriangleStripSet é usada para desenhar tiras de triângulos
-        # interconectados, você receberá as coordenadas dos pontos no parâmetro point, esses
-        # pontos são uma lista de pontos x, y, e z sempre na ordem. Assim point[0] é o valor
-        # da coordenada x do primeiro ponto, point[1] o valor y do primeiro ponto, point[2]
-        # o valor z da coordenada z do primeiro ponto. Já point[3] é a coordenada x do
-        # segundo ponto e assim por diante. No IndexedTriangleStripSet uma lista informando
-        # como conectar os vértices é informada em index, o valor -1 indica que a lista
-        # acabou. A ordem de conexão será de 3 em 3 pulando um índice. Por exemplo: o
-        # primeiro triângulo será com os vértices 0, 1 e 2, depois serão os vértices 1, 2 e 3,
-        # depois 2, 3 e 4, e assim por diante. Cuidado com a orientação dos vértices, ou seja,
-        # todos no sentido horário ou todos no sentido anti-horário, conforme especificado.
-
-        # O print abaixo é só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedTriangleStripSet : pontos = {0}, index = {1}".format(point, index))
-        print("IndexedTriangleStripSet : colors = {0}".format(colors)) # imprime as cores
-
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Mesma ideia do TriangleStripSet, mas as tiras vêm explícitas em index,
+        # separadas por -1.
+        indices = [i for faixa in GL.faixas(index) for i in GL.tira(faixa)]
+        GL.desenhar_indices(point, indices, colors)
 
     @staticmethod
     def indexedFaceSet(coord, coordIndex, colorPerVertex, color, colorIndex,
                        texCoord, texCoordIndex, colors, current_texture):
         """Função usada para renderizar IndexedFaceSet."""
         # https://www.web3d.org/specifications/X3Dv4/ISO-IEC19775-1v4-IS/Part01/components/geometry3D.html#IndexedFaceSet
-        # A função indexedFaceSet é usada para desenhar malhas de triângulos. Ela funciona de
-        # forma muito simular a IndexedTriangleStripSet porém com mais recursos.
-        # Você receberá as coordenadas dos pontos no parâmetro cord, esses
-        # pontos são uma lista de pontos x, y, e z sempre na ordem. Assim coord[0] é o valor
-        # da coordenada x do primeiro ponto, coord[1] o valor y do primeiro ponto, coord[2]
-        # o valor z da coordenada z do primeiro ponto. Já coord[3] é a coordenada x do
-        # segundo ponto e assim por diante. No IndexedFaceSet uma lista de vértices é informada
-        # em coordIndex, o valor -1 indica que a lista acabou.
-        # A ordem de conexão não possui uma ordem oficial, mas em geral se o primeiro ponto com os dois
-        # seguintes e depois este mesmo primeiro ponto com o terçeiro e quarto ponto. Por exemplo: numa
-        # sequencia 0, 1, 2, 3, 4, -1 o primeiro triângulo será com os vértices 0, 1 e 2, depois serão
-        # os vértices 0, 2 e 3, e depois 0, 3 e 4, e assim por diante, até chegar no final da lista.
-        # Adicionalmente essa implementação do IndexedFace aceita cores por vértices, assim
-        # se a flag colorPerVertex estiver habilitada, os vértices também possuirão cores
-        # que servem para definir a cor interna dos poligonos, para isso faça um cálculo
-        # baricêntrico de que cor deverá ter aquela posição. Da mesma forma se pode definir uma
-        # textura para o poligono, para isso, use as coordenadas de textura e depois aplique a
-        # cor da textura conforme a posição do mapeamento. Dentro da classe GPU já está
-        # implementadado um método para a leitura de imagens.
-
-        # Os prints abaixo são só para vocês verificarem o funcionamento, DEVE SER REMOVIDO.
-        print("IndexedFaceSet : ")
-        if coord:
-            print("\tpontos(x, y, z) = {0}, coordIndex = {1}".format(coord, coordIndex))
-        print("colorPerVertex = {0}".format(colorPerVertex))
-        if colorPerVertex and color and colorIndex:
-            print("\tcores(r, g, b) = {0}, colorIndex = {1}".format(color, colorIndex))
-        if texCoord and texCoordIndex:
-            print("\tpontos(u, v) = {0}, texCoordIndex = {1}".format(texCoord, texCoordIndex))
-        if current_texture:
-            image = gpu.GPU.load_texture(current_texture[0])
-            print("\t Matriz com image = {0}".format(image))
-            print("\t Dimensões da image = {0}".format(image.shape))
-        print("IndexedFaceSet : colors = {0}".format(colors))  # imprime no terminal as cores
-
-        # Exemplo de desenho de um pixel branco na coordenada 10, 10
-        gpu.GPU.draw_pixel([10, 10], gpu.GPU.RGB8, [255, 255, 255])  # altera pixel
+        # Cada face (lista de índices terminada em -1) é um polígono, triangulado
+        # em leque a partir do primeiro vértice. Só funciona para polígonos
+        # convexos, que é o caso de todos os exemplos.
+        # ponytail: cor por vértice e textura ignoradas por enquanto (projeto 1.4).
+        indices = [i for face in GL.faixas(coordIndex) for i in GL.leque(face)]
+        GL.desenhar_indices(coord, indices, colors)
 
     @staticmethod
     def box(size, colors):
